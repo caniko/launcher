@@ -119,6 +119,34 @@
             cargoTestExtraArgs = "--lib";
           });
 
+        # The module evaluates and wires what it promises.
+        module = let
+          inherit
+            (nixpkgs.lib.nixosSystem {
+              modules = [
+                self.nixosModules.default
+                {
+                  nixpkgs.hostPlatform = system;
+                  fileSystems."/" = {
+                    device = "none";
+                    fsType = "tmpfs";
+                  };
+                  system.stateVersion = "25.11";
+                  programs.blizznux = {
+                    enable = true;
+                    proton = "/opt/proton";
+                  };
+                }
+              ];
+            })
+            config
+            ;
+        in
+          assert config.hardware.graphics.enable32Bit;
+          assert config.environment.sessionVariables.BLIZZNUX_PROTON == "/opt/proton";
+          assert builtins.elem package config.environment.systemPackages;
+            pkgs.runCommand "blizznux-module" {} "touch $out";
+
         scripts =
           pkgs.runCommand "blizznux-scripts" {
             nativeBuildInputs = [pkgs.bash];
@@ -150,5 +178,47 @@
     devShells = nixpkgs.lib.genAttrs systems (system: {
       default = (forSystem system).devShell;
     });
+
+    nixosModules.default = {
+      config,
+      lib,
+      pkgs,
+      ...
+    }: let
+      cfg = config.programs.blizznux;
+    in {
+      options.programs.blizznux = {
+        enable = lib.mkEnableOption "BlizzNux, Battle.net games through Proton";
+
+        package = lib.mkOption {
+          type = lib.types.package;
+          default = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+          defaultText = lib.literalExpression "blizznux.packages.\${pkgs.stdenv.hostPlatform.system}.default";
+          description = "The BlizzNux package.";
+        };
+
+        proton = lib.mkOption {
+          type = lib.types.nullOr lib.types.path;
+          default = null;
+          example = lib.literalExpression "pkgs.proton-ge-bin.steamcompattool";
+          description = ''
+            A Proton folder (holding an executable `proton`) to use instead of the launcher's
+            own download. Sets `BLIZZNUX_PROTON`, which wins over the folder chosen in Labs.
+          '';
+        };
+      };
+
+      config = lib.mkIf cfg.enable {
+        environment.systemPackages = [cfg.package];
+        environment.sessionVariables = lib.mkIf (cfg.proton != null) {
+          BLIZZNUX_PROTON = toString cfg.proton;
+        };
+        # Proton runs 32-bit code; the launcher's readiness check wants both Vulkan drivers.
+        hardware.graphics = {
+          enable = lib.mkDefault true;
+          enable32Bit = lib.mkDefault true;
+        };
+      };
+    };
   };
 }
