@@ -512,6 +512,11 @@ async function loadConfig() {
   $("#cfg-lab-wow64").checked = c.LAB_WOW64 === "1";
   $("#cfg-lab-direct").checked = c.LAB_DIRECT_PROTON === "1";
   $("#cfg-lab-fps").checked = c.LAB_BNET_FPS === "1";
+  for (const [id, key] of [["cfg-lab-wow64", "LAB_WOW64"], ["cfg-lab-direct", "LAB_DIRECT_PROTON"], ["cfg-lab-fps", "LAB_BNET_FPS"]]) {
+    const locked = !!c[`${key}_SET`];
+    $(`#${id}`).disabled = locked;
+    $(`#${id}-env`).textContent = locked ? `Set by BLIZZNUX_${key}.` : "";
+  }
   $("#cfg-lab-proton").value = c.LAB_PROTON_DIR || "";
   const envProton = !!c.BLIZZNUX_PROTON_SET;
   $("#cfg-lab-proton").disabled = envProton;

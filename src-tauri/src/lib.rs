@@ -192,6 +192,22 @@ async fn set_dpi(app: AppHandle, dpi: u32) -> Result<String, String> {
         .map_err(|e| e.to_string())?
 }
 
+/// A packager locks a Labs setting from the environment: BLIZZNUX_LAB_WOW64, BLIZZNUX_LAB_DIRECT_PROTON
+/// and BLIZZNUX_LAB_BNET_FPS, "1" on and anything else off, win over the config file. The `_SET` markers
+/// are not saved settings: they tell the window that the packager's variable is in charge. `_USER` keeps
+/// the user's own value, which is what gets saved, so dropping the variable gives the user's choice back.
+fn apply_labs_env(map: &mut BTreeMap<String, String>, env: impl Fn(&str) -> Option<String>) {
+    for k in ["LAB_WOW64", "LAB_DIRECT_PROTON", "LAB_BNET_FPS"] {
+        if let Some(v) = env(&format!("BLIZZNUX_{k}")).filter(|v| !v.trim().is_empty()) {
+            if let Some(user) = map.get(k).cloned() {
+                map.insert(format!("{k}_USER"), user);
+            }
+            map.insert(k.to_string(), if v.trim() == "1" { "1" } else { "0" }.into());
+            map.insert(format!("{k}_SET"), "1".into());
+        }
+    }
+}
+
 pub(crate) fn load_config() -> BTreeMap<String, String> {
     let mut map = BTreeMap::new();
     if let Ok(text) = fs::read_to_string(config_path()) {
@@ -203,6 +219,7 @@ pub(crate) fn load_config() -> BTreeMap<String, String> {
             }
         }
     }
+    apply_labs_env(&mut map, |k| std::env::var(k).ok());
     map
 }
 
@@ -227,7 +244,8 @@ pub(crate) fn save_config(current: &BTreeMap<String, String>) -> Result<(), Stri
         current.get("OFFLOAD").cloned().unwrap_or_else(|| "auto".into()),
     );
     for k in ["INSTALL_ID", "REPORTS_AUTO", "USER_TOKEN", "USERNAME", "LAST_USERNAME", "REPORTS_SHARE", "BUG_AUTO", "LAST_LAUNCH_OK", "LAST_RUN_OK", "LAB_WOW64", "LAB_PROTON_DIR", "LAB_DIRECT_PROTON", "LAB_BNET_FPS"] {
-        if let Some(v) = current.get(k).filter(|v| !v.is_empty()) {
+        let k_saved = if current.contains_key(&format!("{k}_SET")) { format!("{k}_USER") } else { k.to_string() };
+        if let Some(v) = current.get(&k_saved).filter(|v| !v.is_empty()) {
             text.push_str(&format!("{k}={v}\n"));
         }
     }
@@ -937,6 +955,30 @@ mod lab_tests {
         assert!(executable_file(&umu));
         assert!(!executable_file(&dir));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_packager_locks_a_labs_setting_from_the_environment() {
+        let mut c = BTreeMap::new();
+        c.insert("LAB_WOW64".to_string(), "0".to_string());
+        c.insert("LAB_BNET_FPS".to_string(), "1".to_string());
+        apply_labs_env(&mut c, |k| match k {
+            "BLIZZNUX_LAB_WOW64" => Some("1".to_string()),
+            "BLIZZNUX_LAB_DIRECT_PROTON" => Some("x".to_string()),
+            "BLIZZNUX_LAB_BNET_FPS" => Some("  ".to_string()),
+            _ => None,
+        });
+        assert_eq!(c.get("LAB_WOW64").map(String::as_str), Some("1"));
+        assert_eq!(c.get("LAB_WOW64_SET").map(String::as_str), Some("1"));
+        // The user's own value is what gets saved; the unset DIRECT_PROTON has none.
+        assert_eq!(c.get("LAB_WOW64_USER").map(String::as_str), Some("0"));
+        assert!(!c.contains_key("LAB_DIRECT_PROTON_USER"));
+        // Anything but "1" is off, as in the wrapper.
+        assert_eq!(c.get("LAB_DIRECT_PROTON").map(String::as_str), Some("0"));
+        assert_eq!(c.get("LAB_DIRECT_PROTON_SET").map(String::as_str), Some("1"));
+        // Blank or unset leaves the user's value alone.
+        assert_eq!(c.get("LAB_BNET_FPS").map(String::as_str), Some("1"));
+        assert!(!c.contains_key("LAB_BNET_FPS_SET"));
     }
 
     #[test]
