@@ -121,7 +121,7 @@
 
         # The module evaluates and wires what it promises.
         module = let
-          inherit
+          evalWith = extra:
             (nixpkgs.lib.nixosSystem {
               modules = [
                 self.nixosModules.default
@@ -132,19 +132,34 @@
                     fsType = "tmpfs";
                   };
                   system.stateVersion = "25.11";
-                  programs.blizznux = {
-                    enable = true;
-                    proton = "/opt/proton";
-                  };
+                  programs.blizznux =
+                    {
+                      enable = true;
+                      proton = "/opt/proton";
+                    }
+                    // extra;
                 }
               ];
             })
-            config
-            ;
+            .config;
+          config = evalWith {};
         in
           assert config.hardware.graphics.enable32Bit;
           assert config.environment.sessionVariables.BLIZZNUX_PROTON == "/opt/proton";
+          assert !(config.environment.sessionVariables ? BLIZZNUX_LAB_WOW64);
           assert builtins.elem package config.environment.systemPackages;
+          assert let
+            labs = evalWith {
+              labs = {
+                wow64 = true;
+                directProton = false;
+              };
+            };
+          in
+            !labs.hardware.graphics.enable32Bit
+            && labs.environment.sessionVariables.BLIZZNUX_LAB_WOW64 == "1"
+            && labs.environment.sessionVariables.BLIZZNUX_LAB_DIRECT_PROTON == "0"
+            && !(labs.environment.sessionVariables ? BLIZZNUX_LAB_BNET_FPS);
             pkgs.runCommand "blizznux-module" {} "touch $out";
 
         scripts =
@@ -186,6 +201,12 @@
       ...
     }: let
       cfg = config.programs.blizznux;
+      # Labs settings a packager can lock: option name -> config key, set as BLIZZNUX_<key>.
+      labKeys = {
+        wow64 = "LAB_WOW64";
+        directProton = "LAB_DIRECT_PROTON";
+        bnetFps = "LAB_BNET_FPS";
+      };
     in {
       options.programs.blizznux = {
         enable = lib.mkEnableOption "BlizzNux, Battle.net games through Proton";
@@ -206,17 +227,33 @@
             own download. Sets `BLIZZNUX_PROTON`, which wins over the folder chosen in Labs.
           '';
         };
+
+        labs = lib.mapAttrs (_: key:
+          lib.mkOption {
+            type = lib.types.nullOr lib.types.bool;
+            default = null;
+            description = ''
+              Lock the Labs setting `${key}` on or off. Sets `BLIZZNUX_${key}`, which wins over
+              Settings > Labs; the app shows the setting but cannot change it. `null` leaves it
+              to the user.
+            '';
+          })
+        labKeys;
       };
 
       config = lib.mkIf cfg.enable {
         environment.systemPackages = [cfg.package];
-        environment.sessionVariables = lib.mkIf (cfg.proton != null) {
-          BLIZZNUX_PROTON = toString cfg.proton;
-        };
-        # Proton runs 32-bit code; the launcher's readiness check wants both Vulkan drivers.
+        environment.sessionVariables =
+          lib.optionalAttrs (cfg.proton != null) {BLIZZNUX_PROTON = toString cfg.proton;}
+          // lib.mapAttrs' (name: key: lib.nameValuePair "BLIZZNUX_${key}" (
+            if cfg.labs.${name}
+            then "1"
+            else "0"
+          )) (lib.filterAttrs (name: _: cfg.labs.${name} != null) labKeys);
+        # Proton runs 32-bit code; without Wine WoW64 mode it needs the 32-bit Vulkan driver too.
         hardware.graphics = {
           enable = lib.mkDefault true;
-          enable32Bit = lib.mkDefault true;
+          enable32Bit = lib.mkDefault (cfg.labs.wow64 != true);
         };
       };
     };
